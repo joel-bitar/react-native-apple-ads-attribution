@@ -1,5 +1,5 @@
 {
-  "name": "@joel-bitar/react-native-apple-ads-attribution",
+  "name": "@hexigames/react-native-apple-ads-attribution",
   "version": "0.1.0",
   "description": "Fetches apple attribution data via iAd and AdServices APIs",
   "main": "index",
@@ -19,7 +19,7 @@
     "attributionToken"
   ],
   "repository": "https://github.com/joel-bitar/react-native-apple-ads-attribution",
-  "author": "Joel Bitar (https://github.com/joel-bitar)",
+  "author": "Benjamin Bjorklund (https://github.com/joel-bitar)",
   "license": "MIT",
   "bugs": {
     "url": "https://github.com/joel-bitar/react-native-apple-ads-attribution/issues"
