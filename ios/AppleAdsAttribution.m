@@ -5,6 +5,7 @@
 
 @implementation AppleAdsAttribution
 static NSString *const RNAAAErrorDomain = @"RNAAAErrorDomain";
+static int NUM_RETRIES = 3;
 
 RCT_EXPORT_MODULE();
 
@@ -34,10 +35,19 @@ RCT_EXPORT_MODULE();
     reject(userInfo[@"code"], userInfo[@"message"], error);
 }
 
++ (BOOL)isSimulator {
+    #if (TARGET_OS_SIMULATOR)
+    return YES;
+    #else
+    return NO;
+    #endif
+}
+
 /**
  * Uses the provided token to request attribution data from apples AdServices API.
  */
 + (void) requestAdServicesAttributionDataUsingToken:(NSString *) token
+                                        retriesLeft:(int) retriesLeft
                                   completionHandler:(void (^)(NSDictionary * _Nullable data, NSError * _Nullable error))completionHandler
 API_AVAILABLE(ios(14.3)) {
     NSMutableURLRequest *request = [[NSMutableURLRequest alloc] init];
@@ -51,12 +61,17 @@ API_AVAILABLE(ios(14.3)) {
         // Status codes like 404 doesn't generate an error, so check that request was successful by making sure it's a 200 code
         if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
             NSInteger statusCode = [(NSHTTPURLResponse *)response statusCode];
-            
             if (statusCode != 200) {
-                NSMutableDictionary* details = [NSMutableDictionary dictionary];
-                [details setValue:[NSString stringWithFormat:@"Request to get data from Adservices API failed with status code %ld", (long)statusCode] forKey:NSLocalizedDescriptionKey];
-                NSError* error = [NSError errorWithDomain:RNAAAErrorDomain code:100 userInfo:details];
-                completionHandler(nil, error);
+                if ((statusCode == 404 || statusCode == 500) && retriesLeft > 0) {
+                    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                        [AppleAdsAttribution requestAdServicesAttributionDataUsingToken:token retriesLeft:retriesLeft-1 completionHandler:completionHandler];
+                    });
+                } else {
+                    NSMutableDictionary* details = [NSMutableDictionary dictionary];
+                    [details setValue:[NSString stringWithFormat:@"Request to get data from Adservices API failed with status code %ld. Re-tried %i times", (long)statusCode, NUM_RETRIES - retriesLeft] forKey:NSLocalizedDescriptionKey];
+                    NSError* error = [NSError errorWithDomain:RNAAAErrorDomain code:100 userInfo:details];
+                    completionHandler(nil, error);
+                }
                 return;
             }
         }
@@ -87,6 +102,15 @@ API_AVAILABLE(ios(14.3)) {
  * Returns nil if token couldn't be generated.
  */
 + (NSString *) getAdServicesAttributionToken:(NSError * _Nullable *)error {
+    if([AppleAdsAttribution isSimulator]) {
+        if (error != NULL) {
+            NSMutableDictionary* details = [NSMutableDictionary dictionary];
+            [details setValue:@"Error getting token, not available in Simulator" forKey:NSLocalizedDescriptionKey];
+            *error = [NSError errorWithDomain:RNAAAErrorDomain code:100 userInfo:details];
+        }
+        return nil;
+    }
+
     if (@available(iOS 14.3, *))
     {
         Class AAAttributionClass = NSClassFromString(@"AAAttribution");
@@ -120,7 +144,7 @@ API_AVAILABLE(ios(14.3)) {
         NSString* attributionToken = [AppleAdsAttribution getAdServicesAttributionToken:&tokenError];
         
         if (attributionToken) {
-            [AppleAdsAttribution requestAdServicesAttributionDataUsingToken:attributionToken completionHandler:completionHandler];
+            [AppleAdsAttribution requestAdServicesAttributionDataUsingToken:attributionToken retriesLeft:NUM_RETRIES completionHandler:completionHandler];
         } else {
             // No token
             completionHandler(nil, tokenError);
@@ -167,7 +191,7 @@ RCT_EXPORT_METHOD(getAttributionData:
                   rejecter:
                   (RCTPromiseRejectBlock) reject) {
     
-    [AppleAdsAttribution getAdServicesAttributionDataWithCompletionHandler:^(NSDictionary * _Nullable attributionData, NSError * _Nullable addServicesError) {
+    [AppleAdsAttribution getAdServicesAttributionDataWithCompletionHandler:^(NSDictionary * _Nullable attributionData, NSError * _Nullable adServicesError) {
         if (attributionData != nil) {
             resolve(attributionData);
         } else {
@@ -177,7 +201,7 @@ RCT_EXPORT_METHOD(getAttributionData:
                     resolve(data);
                 } else {
                     // Reject with both error messages
-                    NSString *combinedErrorMessage = [NSString stringWithFormat:@"Add services error: %@. \niAD error: %@", addServicesError != NULL ? addServicesError.localizedDescription : @"no error message", iAdError != NULL ? iAdError.localizedDescription : @"no error message"];
+                    NSString *combinedErrorMessage = [NSString stringWithFormat:@"Ad services error: %@. \niAD error: %@", adServicesError != NULL ? adServicesError.localizedDescription : @"no error message", iAdError != NULL ? iAdError.localizedDescription : @"no error message"];
                     
                     [AppleAdsAttribution rejectPromiseWithUserInfo:reject
                                                           userInfo:[@{
