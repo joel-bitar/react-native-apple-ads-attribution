@@ -15,7 +15,7 @@ RCT_EXPORT_MODULE();
 }
 
 + (void)rejectPromiseWithNSError:(RCTPromiseRejectBlock)reject error:(NSError * _Nullable)error {
-    
+
     if (error == NULL) {
         reject(@"unknown", @"Failed with unknown error", nil);
     } else {
@@ -30,7 +30,7 @@ RCT_EXPORT_MODULE();
 }
 
 + (void)rejectPromiseWithUserInfo:(RCTPromiseRejectBlock)reject userInfo:(NSMutableDictionary *)userInfo {
-    
+
     NSError *error = [NSError errorWithDomain:RNAAAErrorDomain code:100 userInfo:userInfo];
     reject(userInfo[@"code"], userInfo[@"message"], error);
 }
@@ -55,9 +55,9 @@ API_AVAILABLE(ios(14.3)) {
     [request setValue:@"text/plain" forHTTPHeaderField:@"Content-Type"];
     [request setURL:[NSURL URLWithString:@"https://api-adservices.apple.com/api/v1/"]];
     [request setHTTPBody:[token dataUsingEncoding:NSUTF8StringEncoding]];
-    
+
     [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData * _Nullable data, NSURLResponse * _Nullable response, NSError * _Nullable reqError) {
-        
+
         // Status codes like 404 doesn't generate an error, so check that request was successful by making sure it's a 200 code
         if ([response isKindOfClass:[NSHTTPURLResponse class]]) {
             NSInteger statusCode = [(NSHTTPURLResponse *)response statusCode];
@@ -75,7 +75,7 @@ API_AVAILABLE(ios(14.3)) {
                 return;
             }
         }
-        
+
         if (reqError != nil) {
             completionHandler(nil, reqError);
         } else if (data) {
@@ -92,7 +92,7 @@ API_AVAILABLE(ios(14.3)) {
             [details setValue:@"Request to Adservices API failed with unknown error" forKey:NSLocalizedDescriptionKey];
             NSError* error = [NSError errorWithDomain:RNAAAErrorDomain code:100 userInfo:details];
             completionHandler(nil, error);
-            
+
         }
     }] resume];
 }
@@ -115,9 +115,32 @@ API_AVAILABLE(ios(14.3)) {
     {
         Class AAAttributionClass = NSClassFromString(@"AAAttribution");
         if (AAAttributionClass) {
-            NSString *attributionToken = [AAAttributionClass attributionTokenWithError:error];
-            if (*error == nil && attributionToken) {
-                return attributionToken;
+            // The code below is based on https://github.com/BranchMetrics/ios-branch-deep-linking-attribution/pull/1114
+            // We are getting reports on iOS 14.5 that this API can hang, adding a short timeout for now.
+            dispatch_semaphore_t semaphore = dispatch_semaphore_create(0);
+
+            __block NSString *token = nil;
+            __block NSError *innerError = nil;
+            dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+                token = [AAAttributionClass attributionTokenWithError:&innerError];
+                dispatch_semaphore_signal(semaphore);
+            });
+
+            // Apple said this API should respond within 50ms, lets give up after 100 ms
+            dispatch_semaphore_wait(semaphore, dispatch_time(DISPATCH_TIME_NOW, (int64_t)(100 * NSEC_PER_MSEC)));
+
+            if (innerError != nil) {
+                *error = innerError;
+                return nil;
+            } else {
+                if (token == nil) {
+                    NSMutableDictionary* details = [NSMutableDictionary dictionary];
+                    [details setValue:@"Error getting token, exceeded 100 ms timeout" forKey:NSLocalizedDescriptionKey];
+                    *error = [NSError errorWithDomain:RNAAAErrorDomain code:100 userInfo:details];
+                    return nil;
+                } else {
+                    return token;
+                }
             }
         } else {
             NSMutableDictionary* details = [NSMutableDictionary dictionary];
@@ -137,12 +160,12 @@ API_AVAILABLE(ios(14.3)) {
  * Returns and error if attribution data couldn't be fetched
  */
 + (void) getAdServicesAttributionDataWithCompletionHandler: (void (^)(NSDictionary * _Nullable data, NSError * _Nullable error))completionHandler {
-    
+
     if (@available(iOS 14.3, *))
     {
         NSError *tokenError = nil;
         NSString* attributionToken = [AppleAdsAttribution getAdServicesAttributionToken:&tokenError];
-        
+
         if (attributionToken) {
             [AppleAdsAttribution requestAdServicesAttributionDataUsingToken:attributionToken retriesLeft:NUM_RETRIES completionHandler:completionHandler];
         } else {
@@ -163,7 +186,7 @@ API_AVAILABLE(ios(14.3)) {
  * completionHandler will return nil with an error if attribution data couldn't be retrieved. Reasons for failing may be that the user disabled tracking or that the iOS version is < 10.
  */
 + (void) getiAdAttributionDataWithCompletionHandler: (void (^)(NSDictionary * _Nullable data, NSError * _Nullable error))completionHandler {
-    
+
     if ([[ADClient sharedClient] respondsToSelector:@selector(requestAttributionDetailsWithBlock:)]) {
         [[ADClient sharedClient] requestAttributionDetailsWithBlock: ^(NSDictionary *attributionDetails, NSError *error) {
             if (error == nil) {
@@ -190,7 +213,7 @@ RCT_EXPORT_METHOD(getAttributionData:
                   (RCTPromiseResolveBlock) resolve
                   rejecter:
                   (RCTPromiseRejectBlock) reject) {
-    
+
     [AppleAdsAttribution getAdServicesAttributionDataWithCompletionHandler:^(NSDictionary * _Nullable attributionData, NSError * _Nullable adServicesError) {
         if (attributionData != nil) {
             resolve(attributionData);
@@ -202,14 +225,14 @@ RCT_EXPORT_METHOD(getAttributionData:
                 } else {
                     // Reject with both error messages
                     NSString *combinedErrorMessage = [NSString stringWithFormat:@"Ad services error: %@. \niAD error: %@", adServicesError != NULL ? adServicesError.localizedDescription : @"no error message", iAdError != NULL ? iAdError.localizedDescription : @"no error message"];
-                    
+
                     [AppleAdsAttribution rejectPromiseWithUserInfo:reject
                                                           userInfo:[@{
                                                             @"code" : @"unknown",
                                                             @"message" : combinedErrorMessage
                                                           } mutableCopy]];
                 }
-                
+
             }];
         }
     }];
@@ -220,14 +243,14 @@ RCT_EXPORT_METHOD(getAttributionData:
  * Rejected with error if it failed to get data
  *  */
 RCT_EXPORT_METHOD(getiAdAttributionData: (RCTPromiseResolveBlock) resolve rejecter: (RCTPromiseRejectBlock) reject) {
-    
+
     [AppleAdsAttribution getiAdAttributionDataWithCompletionHandler:^(NSDictionary * _Nullable data, NSError * _Nullable error) {
         if(data != nil) {
             resolve(data);
         } else {
             [AppleAdsAttribution rejectPromiseWithNSError:reject error:error];
         }
-        
+
     }];
 }
 
@@ -238,7 +261,7 @@ RCT_EXPORT_METHOD(getiAdAttributionData: (RCTPromiseResolveBlock) resolve reject
 RCT_EXPORT_METHOD(getAdServicesAttributionToken: (RCTPromiseResolveBlock) resolve rejecter: (RCTPromiseRejectBlock) reject) {
     NSError *error = nil;
     NSString* attributionToken = [AppleAdsAttribution getAdServicesAttributionToken:&error];
-    
+
     if (attributionToken != nil) {
         resolve(attributionToken);
     } else {
